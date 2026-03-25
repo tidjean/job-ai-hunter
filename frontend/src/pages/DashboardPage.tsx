@@ -13,26 +13,38 @@ import {
 } from "recharts";
 import { useAppData } from "../contexts/AppDataContext";
 import { StatCard } from "../components/StatCard";
+import { StatePanel } from "../components/StatePanel";
 
 export function DashboardPage() {
-  const { dashboard, runRefresh, busyAction, lastRefreshResult } = useAppData();
+  const { dashboard, runRefresh, refreshAll, busyAction, lastRefreshResult, loading, error } = useAppData();
 
-  if (!dashboard) {
+  if (loading && !dashboard) {
     return <div className="empty-state">Loading dashboard...</div>;
   }
 
+  if (!dashboard) {
+    return (
+      <StatePanel
+        title="Dashboard unavailable"
+        description={error ?? "The application data could not be loaded."}
+        actionLabel="Retry"
+        onAction={() => void refreshAll()}
+      />
+    );
+  }
+
   return (
-    <div className="page">
-      <div className="page-header">
+    <div className="page d-grid">
+      <div className="page-header d-flex flex-wrap justify-content-between align-items-start">
         <div>
           <h2>Dashboard</h2>
           <p>Pipeline global, budget IA, santé des sources et qualité de matching.</p>
         </div>
-        <div className="header-actions">
-          <button onClick={() => void runRefresh(false)} disabled={Boolean(busyAction)}>
+        <div className="header-actions d-flex flex-wrap">
+          <button className="btn btn-primary" onClick={() => void runRefresh(false)} disabled={Boolean(busyAction)}>
             Refresh jobs
           </button>
-          <button className="secondary" onClick={() => void runRefresh(true)} disabled={Boolean(busyAction)}>
+          <button className="secondary btn btn-outline-info" onClick={() => void runRefresh(true)} disabled={Boolean(busyAction)}>
             Force rescore
           </button>
         </div>
@@ -48,8 +60,19 @@ export function DashboardPage() {
         <StatCard label="Average score" value={dashboard.summary.averageScore.toFixed(1)} />
       </section>
 
+      {dashboard.summary.totalJobs === 0 ? (
+        <StatePanel
+          title="No jobs in the pipeline yet"
+          description="The dashboard is connected, but the local database does not contain any jobs yet. Launch a refresh to fetch live providers and the built-in demo source."
+          actionLabel="Fetch jobs now"
+          onAction={() => void runRefresh(false)}
+          secondaryActionLabel="Force rescore"
+          onSecondaryAction={() => void runRefresh(true)}
+        />
+      ) : null}
+
       {lastRefreshResult ? (
-        <section className="panel accent-panel">
+        <section className="panel accent-panel card border-0">
           <h3>Last refresh</h3>
           <p>
             {lastRefreshResult.inserted} jobs upserted, {lastRefreshResult.scored} scored,{" "}
@@ -66,8 +89,8 @@ export function DashboardPage() {
       ) : null}
 
       <section className="grid-two">
-        <div className="panel chart-panel">
-          <div className="panel-header">
+        <div className="panel chart-panel card border-0">
+          <div className="panel-header d-flex justify-content-between">
             <h3>Score trend</h3>
             <span>14 latest refresh days</span>
           </div>
@@ -88,8 +111,8 @@ export function DashboardPage() {
           </ResponsiveContainer>
         </div>
 
-        <div className="panel chart-panel">
-          <div className="panel-header">
+        <div className="panel chart-panel card border-0">
+          <div className="panel-header d-flex justify-content-between">
             <h3>Pipeline by status</h3>
             <span>Applications and review flow</span>
           </div>
@@ -106,8 +129,8 @@ export function DashboardPage() {
       </section>
 
       <section className="grid-two">
-        <div className="panel chart-panel">
-          <div className="panel-header">
+        <div className="panel chart-panel card border-0">
+          <div className="panel-header d-flex justify-content-between">
             <h3>Decision split</h3>
             <span>AI qualification output</span>
           </div>
@@ -119,8 +142,8 @@ export function DashboardPage() {
           </ResponsiveContainer>
         </div>
 
-        <div className="panel">
-          <div className="panel-header">
+        <div className="panel card border-0">
+          <div className="panel-header d-flex justify-content-between">
             <h3>Provider activity</h3>
             <span>Most recent runs</span>
           </div>

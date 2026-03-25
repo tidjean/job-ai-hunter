@@ -10,6 +10,8 @@ import {
 } from "react";
 import { api } from "../api/client";
 import type {
+  AdminStatePayload,
+  AiCredentialsStatus,
   AppConfig,
   CandidateProfile,
   CvDocument,
@@ -24,7 +26,9 @@ interface AppDataContextValue {
   profile: CandidateProfile | null;
   config: AppConfig | null;
   cv: CvDocument | null;
+  aiCredentials: AiCredentialsStatus | null;
   loading: boolean;
+  error: string | null;
   busyAction: string | null;
   message: string | null;
   lastRefreshResult: RefreshResult | null;
@@ -32,8 +36,12 @@ interface AppDataContextValue {
   runRefresh: (forceRescore?: boolean) => Promise<void>;
   saveProfile: (profile: CandidateProfile) => Promise<void>;
   saveConfig: (config: AppConfig) => Promise<void>;
+  saveOpenAiApiKey: (apiKey: string) => Promise<void>;
+  clearOpenAiApiKey: () => Promise<void>;
+  testOpenAiConnection: () => Promise<void>;
   uploadCv: (file: File) => Promise<void>;
   updateJob: (id: string, payload: { applicationStatus?: string; notes?: string }) => Promise<void>;
+  deleteJob: (id: string) => Promise<void>;
   scoreJob: (id: string) => Promise<void>;
   generateCoverLetter: (id: string) => Promise<void>;
 }
@@ -46,7 +54,9 @@ export function AppDataProvider({ children }: PropsWithChildren) {
   const [profile, setProfile] = useState<CandidateProfile | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [cv, setCv] = useState<CvDocument | null>(null);
+  const [aiCredentials, setAiCredentials] = useState<AiCredentialsStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [lastRefreshResult, setLastRefreshResult] = useState<RefreshResult | null>(null);
@@ -59,16 +69,21 @@ export function AppDataProvider({ children }: PropsWithChildren) {
         api.getJobs(),
         api.getAdminState()
       ]);
+      const typedAdminState = adminState as AdminStatePayload;
       startTransition(() => {
         setDashboard(dashboardData);
         setJobs(jobsData);
-        setProfile(adminState.profile);
-        setConfig(adminState.config);
-        setCv(adminState.cv);
+        setProfile(typedAdminState.profile);
+        setConfig(typedAdminState.config);
+        setCv(typedAdminState.cv);
+        setAiCredentials(typedAdminState.aiCredentials);
       });
+      setError(null);
       setMessage(null);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to load application data");
+      const nextError = error instanceof Error ? error.message : "Unable to load application data";
+      setError(nextError);
+      setMessage(nextError);
     } finally {
       setLoading(false);
     }
@@ -80,6 +95,10 @@ export function AppDataProvider({ children }: PropsWithChildren) {
 
   const updateSingleJob = useCallback((nextJob: JobRecord) => {
     setJobs((current) => current.map((job) => (job.id === nextJob.id ? nextJob : job)));
+  }, []);
+
+  const removeSingleJob = useCallback((id: string) => {
+    setJobs((current) => current.filter((job) => job.id !== id));
   }, []);
 
   const refreshAll = useCallback(async () => {
@@ -140,6 +159,45 @@ export function AppDataProvider({ children }: PropsWithChildren) {
     }
   }, []);
 
+  const persistOpenAiApiKey = useCallback(async (apiKey: string) => {
+    setBusyAction("Saving OpenAI key");
+    try {
+      const saved = await api.saveOpenAiApiKey(apiKey);
+      setAiCredentials(saved);
+      setMessage("OpenAI API key saved");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to save OpenAI API key");
+    } finally {
+      setBusyAction(null);
+    }
+  }, []);
+
+  const removeOpenAiApiKey = useCallback(async () => {
+    setBusyAction("Removing OpenAI key");
+    try {
+      const saved = await api.clearOpenAiApiKey();
+      setAiCredentials(saved);
+      setMessage("Stored OpenAI API key removed");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to remove OpenAI API key");
+    } finally {
+      setBusyAction(null);
+    }
+  }, []);
+
+  const runOpenAiConnectionTest = useCallback(async () => {
+    setBusyAction("Testing OpenAI connection");
+    try {
+      const result = await api.testOpenAiConnection();
+      setMessage(result.message);
+      await loadAll();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to test OpenAI connection");
+    } finally {
+      setBusyAction(null);
+    }
+  }, [loadAll]);
+
   const updateJob = useCallback(async (id: string, payload: { applicationStatus?: string; notes?: string }) => {
     setBusyAction("Saving job");
     try {
@@ -153,6 +211,20 @@ export function AppDataProvider({ children }: PropsWithChildren) {
       setBusyAction(null);
     }
   }, [loadAll, updateSingleJob]);
+
+  const deleteJob = useCallback(async (id: string) => {
+    setBusyAction("Deleting job");
+    try {
+      await api.deleteJob(id);
+      removeSingleJob(id);
+      await loadAll();
+      setMessage("Job deleted");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to delete job");
+    } finally {
+      setBusyAction(null);
+    }
+  }, [loadAll, removeSingleJob]);
 
   const scoreJob = useCallback(async (id: string) => {
     setBusyAction("Scoring job");
@@ -188,7 +260,9 @@ export function AppDataProvider({ children }: PropsWithChildren) {
       profile,
       config,
       cv,
+      aiCredentials,
       loading,
+      error,
       busyAction,
       message,
       lastRefreshResult,
@@ -196,8 +270,12 @@ export function AppDataProvider({ children }: PropsWithChildren) {
       runRefresh,
       saveProfile: persistProfile,
       saveConfig: persistConfig,
+      saveOpenAiApiKey: persistOpenAiApiKey,
+      clearOpenAiApiKey: removeOpenAiApiKey,
+      testOpenAiConnection: runOpenAiConnectionTest,
       uploadCv,
       updateJob,
+      deleteJob,
       scoreJob,
       generateCoverLetter: generateLetter
     }),
@@ -207,7 +285,9 @@ export function AppDataProvider({ children }: PropsWithChildren) {
       profile,
       config,
       cv,
+      aiCredentials,
       loading,
+      error,
       busyAction,
       message,
       lastRefreshResult,
@@ -215,8 +295,12 @@ export function AppDataProvider({ children }: PropsWithChildren) {
       runRefresh,
       persistProfile,
       persistConfig,
+      persistOpenAiApiKey,
+      removeOpenAiApiKey,
+      runOpenAiConnectionTest,
       uploadCv,
       updateJob,
+      deleteJob,
       scoreJob,
       generateLetter
     ]

@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { getAiSpendToday, recordAiUsage } from "../lib/db.js";
+import { getAiSpendToday, getStoredOpenAiApiKey, recordAiUsage } from "../lib/db.js";
 import { compactText, safeJsonParse, tokenize, truncate } from "../lib/utils.js";
 import type { AppConfig, CandidateProfile, JobAnalysis, JobDecision, JobRecord } from "../types/models.js";
 
@@ -7,9 +7,44 @@ const SCORE_COST = 0.008;
 const SEARCH_COST = 0.012;
 const COVER_LETTER_COST = 0.01;
 
-const openai = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
+function getOpenAiClient(): OpenAI | null {
+  const apiKey = getStoredOpenAiApiKey() ?? process.env.OPENAI_API_KEY?.trim() ?? "";
+  return apiKey ? new OpenAI({ apiKey }) : null;
+}
+
+export function hasActiveOpenAiClient(): boolean {
+  return getOpenAiClient() !== null;
+}
+
+export async function testOpenAiConnection(model: string): Promise<{ ok: true; model: string; message: string }> {
+  const client = getOpenAiClient();
+  if (!client) {
+    throw new Error("No OpenAI API key configured");
+  }
+
+  const completion = await client.chat.completions.create({
+    model,
+    temperature: 0,
+    max_completion_tokens: 20,
+    messages: [
+      {
+        role: "user",
+        content: "Reply with exactly: ok"
+      }
+    ]
+  });
+
+  const text = completion.choices[0]?.message?.content?.trim().toLowerCase() ?? "";
+  if (!text.includes("ok")) {
+    throw new Error("OpenAI test request succeeded but returned an unexpected response");
+  }
+
+  return {
+    ok: true,
+    model,
+    message: "OpenAI connection successful"
+  };
+}
 
 function withinBudget(config: AppConfig, estimatedCost: number): boolean {
   return getAiSpendToday() + estimatedCost <= config.maxDailyAiBudgetUsd;
@@ -93,6 +128,7 @@ export async function generateSearchPlan(
     ])
   );
 
+  const openai = getOpenAiClient();
   if (!openai || !withinBudget(config, SEARCH_COST)) {
     return fallback.slice(0, config.searchPlanQueriesPerRefresh);
   }
@@ -138,6 +174,7 @@ export async function analyzeJob(
   config: AppConfig,
   cvText: string
 ): Promise<JobAnalysis> {
+  const openai = getOpenAiClient();
   if (!openai || !withinBudget(config, SCORE_COST)) {
     return heuristicAnalysis(job, profile, config);
   }
@@ -210,6 +247,7 @@ export async function generateCoverLetter(
   config: AppConfig,
   cvText: string
 ): Promise<string> {
+  const openai = getOpenAiClient();
   if (!openai || !withinBudget(config, COVER_LETTER_COST)) {
     return [
       `Dear ${job.company} team,`,

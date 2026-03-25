@@ -32,6 +32,9 @@ export interface SourceConfig {
   label: string;
   query: string;
   limit: number;
+  autoDisabled?: boolean;
+  autoDisabledReason?: string | null;
+  lastFailureAt?: string | null;
 }
 
 export interface AppConfig {
@@ -147,4 +150,11 @@ export interface DashboardPayload {
   bySource: Array<{ name: string; value: number }>;
   scoreTrend: Array<{ date: string; avgScore: number; jobs: number }>;
   providerRuns: ProviderRun[];
+}
+
+export interface AiCredentialsStatus {
+  hasStoredKey: boolean;
+  source: "database" | "environment" | "none";
+  maskedKey: string | null;
+  updatedAt: string | null;
 }

@@ -3,6 +3,7 @@ import { defaultConfig, defaultProfile } from "./defaults.js";
 import { ensureDataDirs, DB_PATH } from "./paths.js";
 import { nowIso, safeJsonParse } from "./utils.js";
 import type {
+  AiCredentialsStatus,
   AppConfig,
   CandidateProfile,
   CvDocument,
@@ -129,12 +130,86 @@ export function saveProfile(profile: CandidateProfile): CandidateProfile {
 }
 
 export function getConfig(): AppConfig {
-  return getSetting("app_config", defaultConfig);
+  const config = getSetting("app_config", defaultConfig);
+  return {
+    ...defaultConfig,
+    ...config,
+    sources: {
+      ...defaultConfig.sources,
+      ...(config.sources ?? {})
+    }
+  };
 }
 
 export function saveConfig(config: AppConfig): AppConfig {
   setSetting("app_config", config);
   return config;
+}
+
+function maskApiKey(value: string): string {
+  if (value.length <= 8) {
+    return "*".repeat(Math.max(4, value.length));
+  }
+
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+export function getStoredOpenAiApiKey(): string | null {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get("openai_api_key") as
+    | { value: string }
+    | undefined;
+
+  if (!row) {
+    return null;
+  }
+
+  const parsed = safeJsonParse<{ key?: string }>(row.value, {});
+  const key = typeof parsed.key === "string" ? parsed.key.trim() : "";
+  return key || null;
+}
+
+export function saveOpenAiApiKey(apiKey: string): AiCredentialsStatus {
+  const trimmed = apiKey.trim();
+  setSetting("openai_api_key", { key: trimmed });
+  return getAiCredentialsStatus();
+}
+
+export function clearOpenAiApiKey(): AiCredentialsStatus {
+  db.prepare("DELETE FROM settings WHERE key = ?").run("openai_api_key");
+  return getAiCredentialsStatus();
+}
+
+export function getAiCredentialsStatus(): AiCredentialsStatus {
+  const storedRow = db.prepare("SELECT updated_at FROM settings WHERE key = ?").get("openai_api_key") as
+    | { updated_at: string }
+    | undefined;
+  const storedKey = getStoredOpenAiApiKey();
+  const envKey = process.env.OPENAI_API_KEY?.trim() || null;
+
+  if (storedKey) {
+    return {
+      hasStoredKey: true,
+      source: "database",
+      maskedKey: maskApiKey(storedKey),
+      updatedAt: storedRow?.updated_at ?? null
+    };
+  }
+
+  if (envKey) {
+    return {
+      hasStoredKey: true,
+      source: "environment",
+      maskedKey: maskApiKey(envKey),
+      updatedAt: null
+    };
+  }
+
+  return {
+    hasStoredKey: false,
+    source: "none",
+    maskedKey: null,
+    updatedAt: null
+  };
 }
 
 export function getLatestCv(): CvDocument | null {
@@ -150,6 +225,39 @@ export function getLatestCv(): CvDocument | null {
     .get() as CvDocument | undefined;
 
   return row ?? null;
+}
+
+export function getCvById(id: number): CvDocument | null {
+  const row = db
+    .prepare(
+      `
+        SELECT id, filename, mime_type as mimeType, storage_path as storagePath, extracted_text as extractedText, uploaded_at as uploadedAt
+        FROM cv_documents
+        WHERE id = ?
+      `
+    )
+    .get(id) as CvDocument | undefined;
+
+  return row ?? null;
+}
+
+export function listCvDocuments(): CvDocument[] {
+  return db
+    .prepare(
+      `
+        SELECT id, filename, mime_type as mimeType, storage_path as storagePath, extracted_text as extractedText, uploaded_at as uploadedAt
+        FROM cv_documents
+        ORDER BY uploaded_at DESC
+      `
+    )
+    .all() as CvDocument[];
+}
+
+export function getCvCorpus(): string {
+  return listCvDocuments()
+    .map((document) => document.extractedText.trim())
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export function saveCvDocument(input: Omit<CvDocument, "id" | "uploadedAt"> & { uploadedAt?: string }): CvDocument {
@@ -440,6 +548,11 @@ export function updateJobMeta(
   );
 
   return getJobById(id);
+}
+
+export function deleteJobById(id: string): boolean {
+  const result = db.prepare("DELETE FROM jobs WHERE id = ?").run(id);
+  return result.changes > 0;
 }
 
 export function recordAiUsage(operation: string, estimatedCostUsd: number, metadata: unknown): void {

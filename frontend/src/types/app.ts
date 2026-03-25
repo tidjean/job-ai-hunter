@@ -32,6 +32,9 @@ export interface SourceConfig {
   label: string;
   query: string;
   limit: number;
+  autoDisabled?: boolean;
+  autoDisabledReason?: string | null;
+  lastFailureAt?: string | null;
 }
 
 export interface AppConfig {
@@ -117,4 +120,18 @@ export interface RefreshResult {
   inserted: number;
   scored: number;
   coverLetters: number;
+}
+
+export interface AiCredentialsStatus {
+  hasStoredKey: boolean;
+  source: "database" | "environment" | "none";
+  maskedKey: string | null;
+  updatedAt: string | null;
+}
+
+export interface AdminStatePayload {
+  profile: CandidateProfile;
+  config: AppConfig;
+  cv: CvDocument | null;
+  aiCredentials: AiCredentialsStatus;
 }

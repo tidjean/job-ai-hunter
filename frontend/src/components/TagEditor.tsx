@@ -6,10 +6,10 @@ interface TagEditorProps {
 
 export function TagEditor({ label, value, onChange }: TagEditorProps) {
   return (
-    <label className="field">
+    <label className="field tag-editor">
       <span>{label}</span>
-      <input
-        type="text"
+      <textarea
+        rows={2}
         value={value.join(", ")}
         onChange={(event) =>
           onChange(

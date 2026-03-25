@@ -1,6 +1,6 @@
 import express from "express";
 import { z } from "zod";
-import { getJobById, listJobs, updateJobMeta } from "../lib/db.js";
+import { deleteJobById, getJobById, listJobs, updateJobMeta } from "../lib/db.js";
 import { createCoverLetterForJob, refreshJobs, scoreSingleJob } from "../services/jobs.js";
 
 const router = express.Router();
@@ -67,6 +67,15 @@ router.get("/jobs/:id", (request, response) => {
   }
 
   response.json(job);
+});
+
+router.delete("/jobs/:id", (request, response) => {
+  const deleted = deleteJobById(request.params.id);
+  if (!deleted) {
+    return response.status(404).json({ error: "Job not found" });
+  }
+
+  response.status(204).send();
 });
 
 export default router;

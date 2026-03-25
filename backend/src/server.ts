@@ -6,12 +6,30 @@ import dashboardRoutes from "./routes/dashboard.js";
 import jobsRoutes from "./routes/jobs.js";
 
 const app = express();
+const allowedOrigins = new Set([
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:4173",
+  "http://127.0.0.1:4173",
+  ...(process.env.FRONTEND_ORIGIN ? [process.env.FRONTEND_ORIGIN] : [])
+]);
 
-app.use(
-  cors({
-    origin: process.env.FRONTEND_ORIGIN || "http://localhost:5173"
-  })
-);
+const corsMiddleware = cors({
+  origin(origin, callback) {
+    // Allow non-browser tools and common local dev origins.
+    if (!origin || allowedOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+});
+
+app.use(corsMiddleware);
+app.options("*", corsMiddleware);
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (_request, response) => {

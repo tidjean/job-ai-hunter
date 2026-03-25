@@ -81,6 +81,18 @@ export const defaultConfig: AppConfig = {
       query: "programming",
       limit: 15
     },
+    himalayas: {
+      enabled: true,
+      label: "Himalayas",
+      query: "senior fullstack remote",
+      limit: 20
+    },
+    arbeitnow: {
+      enabled: true,
+      label: "Arbeitnow",
+      query: "typescript remote fullstack",
+      limit: 20
+    },
     indeedCom: {
       enabled: true,
       label: "Indeed.com",
@@ -103,6 +115,12 @@ export const defaultConfig: AppConfig = {
       enabled: true,
       label: "JobsDB Hong Kong",
       query: "full stack developer",
+      limit: 10
+    },
+    googleJobs: {
+      enabled: false,
+      label: "Google Jobs search",
+      query: "senior fullstack developer remote",
       limit: 10
     },
     demo: {

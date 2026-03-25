@@ -3,8 +3,20 @@ import path from "node:path";
 import express from "express";
 import multer from "multer";
 import { z } from "zod";
-import { getConfig, getLatestCv, getProfile, saveConfig, saveCvDocument, saveProfile } from "../lib/db.js";
+import {
+  clearOpenAiApiKey,
+  getAiCredentialsStatus,
+  getConfig,
+  getCvById,
+  getLatestCv,
+  getProfile,
+  saveConfig,
+  saveCvDocument,
+  saveOpenAiApiKey,
+  saveProfile
+} from "../lib/db.js";
 import { uploadsDestination, extractCvText } from "../services/cv.js";
+import { testOpenAiConnection } from "../services/ai.js";
 import type { AppConfig, CandidateProfile } from "../types/models.js";
 
 const router = express.Router();
@@ -49,7 +61,10 @@ const configSchema: z.ZodType<AppConfig> = z.object({
       enabled: z.boolean(),
       label: z.string(),
       query: z.string(),
-      limit: z.number().min(1).max(100)
+      limit: z.number().min(1).max(100),
+      autoDisabled: z.boolean().optional(),
+      autoDisabledReason: z.string().nullable().optional(),
+      lastFailureAt: z.string().nullable().optional()
     })
   )
 });
@@ -58,8 +73,37 @@ router.get("/admin/state", (_request, response) => {
   response.json({
     profile: getProfile(),
     config: getConfig(),
-    cv: getLatestCv()
+    cv: getLatestCv(),
+    aiCredentials: getAiCredentialsStatus()
   });
+});
+
+const apiKeySchema = z.object({
+  apiKey: z.string().min(1)
+});
+
+router.put("/admin/ai/key", (request, response) => {
+  const parsed = apiKeySchema.safeParse(request.body);
+  if (!parsed.success) {
+    return response.status(400).json({ error: parsed.error.flatten() });
+  }
+
+  response.json(saveOpenAiApiKey(parsed.data.apiKey));
+});
+
+router.delete("/admin/ai/key", (_request, response) => {
+  response.json(clearOpenAiApiKey());
+});
+
+router.post("/admin/ai/test", async (_request, response) => {
+  try {
+    const config = getConfig();
+    const result = await testOpenAiConnection(config.aiModel);
+    response.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to reach OpenAI";
+    response.status(400).json({ error: message });
+  }
 });
 
 router.put("/admin/profile", (request, response) => {
@@ -98,6 +142,29 @@ router.post("/admin/cv", upload.single("cv"), async (request, response) => {
   });
 
   response.json(document);
+});
+
+router.get("/admin/cv/:id/file", (request, response) => {
+  const id = Number(request.params.id);
+  if (!Number.isInteger(id)) {
+    return response.status(400).json({ error: "Invalid CV id" });
+  }
+
+  const document = getCvById(id);
+  if (!document) {
+    return response.status(404).json({ error: "CV not found" });
+  }
+
+  response.type(document.mimeType);
+  response.sendFile(document.storagePath, (error) => {
+    if (error) {
+      const statusCode =
+        typeof error === "object" && error && "statusCode" in error && typeof error.statusCode === "number"
+          ? error.statusCode
+          : 500;
+      response.status(statusCode).end();
+    }
+  });
 });
 
 export default router;

@@ -4,6 +4,163 @@ import { compactText, normalizeWhitespace } from "../lib/utils.js";
 import type { ProviderJob, ProviderResult } from "../types/models.js";
 
 const rssParser = new Parser();
+const engineeringRolePattern =
+  /(full.?stack|full stack|software|web|application|frontend|front-end|backend|back-end|node|typescript|javascript|react|vue|angular|php|python|api|platform|engineer|developer)/i;
+const seniorRolePattern = /(senior|staff|lead|principal|architect)/i;
+function matchesEngineeringQuery(job: Pick<ProviderJob, "title" | "description" | "company" | "location" | "remoteType">, queryTokens: string[]) {
+  const haystack = compactText(job.title, job.description, job.company, job.location, job.remoteType).toLowerCase();
+  const hasEngineeringSignal = engineeringRolePattern.test(haystack);
+  const hasRemoteSignal = /remote|distributed|anywhere|global|work from home/i.test(haystack);
+  const queryMatch = !queryTokens.length || queryTokens.some((token) => haystack.includes(token));
+  const wantsSeniority = queryTokens.includes("senior");
+  const seniorityMatch = !wantsSeniority || seniorRolePattern.test(haystack);
+
+  return hasEngineeringSignal && hasRemoteSignal && queryMatch && seniorityMatch;
+}
+
+async function fetchHtmlWithPlaywright(url: string): Promise<string> {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true });
+
+  try {
+    const page = await browser.newPage({
+      userAgent:
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36"
+    });
+
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForTimeout(2_000);
+    return await page.content();
+  } finally {
+    await browser.close();
+  }
+}
+
+async function parseIndeedJobsWithPlaywright(
+  providerId: "indeedCom" | "indeedFr",
+  domain: string,
+  query: string,
+  limit: number,
+  url: string
+): Promise<ProviderJob[]> {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true });
+
+  try {
+    const page = await browser.newPage({
+      userAgent:
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36"
+    });
+
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForTimeout(2_500);
+
+    const cards = await page
+      .locator("a[data-jk], div.job_seen_beacon, li div[data-testid='slider_item']")
+      .evaluateAll((nodes) =>
+        nodes.map((node) => {
+          const root = node as HTMLElement;
+          const anchor = root.querySelector("a");
+          const text = root.textContent ?? "";
+          return {
+            sourceJobId: root.getAttribute("data-jk") ?? anchor?.getAttribute("href") ?? text,
+            title:
+              root.querySelector("h2 a span, .jobTitle span, [data-testid='job-title']")?.textContent ?? "",
+            company:
+              root.querySelector("[data-testid='company-name'], .companyName")?.textContent ?? "",
+            location:
+              root.querySelector("[data-testid='text-location'], .companyLocation")?.textContent ?? "",
+            salaryText: root.querySelector(".salary-snippet-container")?.textContent ?? null,
+            url: anchor?.getAttribute("href") ?? "",
+            description: text
+          };
+        })
+      );
+
+    return cards
+      .map((card) =>
+        normalizeJob(providerId, {
+          sourceJobId: card.sourceJobId,
+          title: card.title,
+          company: card.company,
+          location: card.location,
+          remoteType: pickRemoteType(card.description),
+          employmentType: null,
+          salaryText: card.salaryText,
+          url: card.url.startsWith("http") ? card.url : `https://${domain}${card.url}`,
+          description: card.description,
+          postedAt: null,
+          queryText: query,
+          rawPayload: card
+        })
+      )
+      .filter((job) => job.title && job.url)
+      .slice(0, limit);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function parseJobsDbWithPlaywright(
+  providerId: "jobsdbTh" | "jobsdbHk",
+  domain: string,
+  query: string,
+  limit: number,
+  url: string
+): Promise<ProviderJob[]> {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true });
+
+  try {
+    const page = await browser.newPage({
+      userAgent:
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36"
+    });
+
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForTimeout(2_500);
+
+    const cards = await page
+      .locator("article, [data-automation='normalJob']")
+      .evaluateAll((nodes) =>
+        nodes.map((node) => {
+          const root = node as HTMLElement;
+          const anchor = root.querySelector("a[data-automation='jobTitle'], a");
+          return {
+            sourceJobId: anchor?.getAttribute("href") ?? root.textContent ?? "",
+            title: anchor?.textContent ?? "",
+            company: root.querySelector("[data-automation='jobCompany']")?.textContent ?? "",
+            location: root.querySelector("[data-automation='jobLocation']")?.textContent ?? "",
+            salaryText: root.querySelector("[data-automation='jobSalary']")?.textContent ?? null,
+            url: anchor?.getAttribute("href") ?? "",
+            description: root.textContent ?? ""
+          };
+        })
+      );
+
+    return cards
+      .map((card) =>
+        normalizeJob(providerId, {
+          sourceJobId: card.sourceJobId,
+          title: card.title,
+          company: card.company,
+          location: card.location,
+          employmentType: null,
+          remoteType: pickRemoteType(card.description),
+          salaryText: card.salaryText,
+          url: card.url.startsWith("http") ? card.url : `https://${domain}${card.url}`,
+          description: card.description,
+          postedAt: null,
+          queryText: query,
+          rawPayload: card
+        })
+      )
+      .filter((job) => job.title && job.url)
+      .slice(0, limit);
+  } finally {
+    await browser.close();
+  }
+}
 
 function pickRemoteType(text: string): string | null {
   const value = text.toLowerCase();
@@ -120,6 +277,119 @@ async function fetchHtml(url: string): Promise<string> {
   }
 
   return response.text();
+}
+
+function stripHtml(value: string): string {
+  return normalizeWhitespace(value.replace(/<[^>]+>/g, " "));
+}
+
+function getSerpApiKey(): string | null {
+  const apiKey = process.env.SERPAPI_API_KEY?.trim() ?? "";
+
+  if (!apiKey) {
+    return null;
+  }
+
+  return apiKey;
+}
+
+type SerpApiGoogleJobsResponse = {
+  jobs_results?: Array<{
+    title?: string;
+    company_name?: string;
+    location?: string;
+    description?: string;
+    related_links?: Array<{
+      link?: string;
+    }>;
+    thumbnail?: string;
+    detected_extensions?: Record<string, string>;
+  }>;
+};
+
+function toSerpApiGoogleJob(
+  item: NonNullable<SerpApiGoogleJobsResponse["jobs_results"]>[number],
+  query: string
+): ProviderJob | null {
+  const link = item.related_links?.find((candidate) => candidate.link)?.link?.trim();
+  if (!link) {
+    return null;
+  }
+
+  const title = normalizeWhitespace(item.title ?? "");
+  const description = stripHtml(item.description ?? "");
+  const company = normalizeWhitespace(item.company_name ?? "") || "Google Jobs";
+  const location = normalizeWhitespace(item.location ?? "") || "Unknown";
+
+  return normalizeJob("googleJobs", {
+    sourceJobId: link,
+    title: title || "Untitled role",
+    company,
+    location,
+    employmentType: null,
+    remoteType: pickRemoteType(compactText(title, description, location)),
+    salaryText: null,
+    url: link,
+    description,
+    postedAt: null,
+    queryText: query,
+    rawPayload: item
+  });
+}
+
+export async function googleJobsProvider(query: string, limit: number): Promise<ProviderResult> {
+  const apiKey = getSerpApiKey();
+  if (!apiKey) {
+    return {
+      providerId: "googleJobs",
+      jobs: [],
+      success: false,
+      message: "Google provider requires SERPAPI_API_KEY"
+    };
+  }
+
+  try {
+    const cappedLimit = Math.max(1, Math.min(limit, 10));
+    const queryTokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const requests = Array.from({ length: Math.ceil(cappedLimit / 10) }, (_, index) => {
+      const start = index * 10;
+      const params = new URLSearchParams({
+        engine: "google_jobs",
+        q: query,
+        hl: "en",
+        api_key: apiKey,
+        start: String(start)
+      });
+
+      return fetchJson<SerpApiGoogleJobsResponse>(
+        `https://serpapi.com/search.json?${params.toString()}`
+      );
+    });
+
+    const payloads = await Promise.all(requests);
+    const jobs = payloads
+      .flatMap((payload) => payload.jobs_results ?? [])
+      .map((item) => toSerpApiGoogleJob(item, query))
+      .filter((job): job is ProviderJob => Boolean(job))
+      .filter((job) => matchesEngineeringQuery(job, queryTokens))
+      .slice(0, limit);
+
+    return {
+      providerId: "googleJobs",
+      jobs,
+      success: jobs.length > 0,
+      message: jobs.length > 0
+        ? `Fetched ${jobs.length} jobs from SerpAPI Google Jobs`
+        : "SerpAPI search succeeded but returned no matching Google Jobs entries"
+    };
+  } catch (error) {
+    return {
+      providerId: "googleJobs",
+      jobs: [],
+      success: false,
+      message: error instanceof Error ? error.message : "Unknown Google search error"
+    };
+  }
 }
 
 export async function remotiveProvider(query: string, limit: number): Promise<ProviderResult> {
@@ -254,42 +524,207 @@ export async function weWorkRemotelyProvider(_query: string, limit: number): Pro
   }
 }
 
+export async function himalayasProvider(query: string, limit: number): Promise<ProviderResult> {
+  try {
+    const pagesToFetch = Math.max(1, Math.ceil(Math.min(limit, 60) / 20));
+    const queryTokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const payloads = await Promise.all(
+      Array.from({ length: pagesToFetch }, (_, index) =>
+        fetchJson<{
+          jobs: Array<{
+            guid: string;
+            title: string;
+            excerpt?: string;
+            companyName?: string;
+            employmentType?: string;
+            locationRestrictions?: Array<{ name: string }>;
+            description?: string;
+            pubDate?: number;
+            applicationLink?: string;
+            minSalary?: number | null;
+            maxSalary?: number | null;
+            currency?: string | null;
+          }>;
+        }>(`https://himalayas.app/jobs/api?limit=20&offset=${index * 20}`)
+      )
+    );
+
+    const jobs = payloads
+      .flatMap((payload) => payload.jobs)
+      .map((item) =>
+        normalizeJob("himalayas", {
+          sourceJobId: item.guid,
+          title: item.title ?? "Untitled role",
+          company: item.companyName ?? "Himalayas",
+          location: item.locationRestrictions?.map((entry) => entry.name).join(", ") || "Remote",
+          employmentType: item.employmentType ?? null,
+          remoteType: "Remote",
+          url: item.applicationLink ?? "https://himalayas.app/jobs",
+          description: item.description ?? item.excerpt ?? "",
+          postedAt: item.pubDate ? new Date(item.pubDate).toISOString() : null,
+          queryText: query,
+          salaryMinUsd: item.currency === "USD" ? item.minSalary ?? null : null,
+          salaryMaxUsd: item.currency === "USD" ? item.maxSalary ?? null : null,
+          rawPayload: item
+        })
+      )
+      .filter((job) => {
+        return matchesEngineeringQuery(job, queryTokens);
+      })
+      .slice(0, limit);
+
+    return {
+      providerId: "himalayas",
+      jobs,
+      success: true,
+      message: `Fetched ${jobs.length} jobs`
+    };
+  } catch (error) {
+    return {
+      providerId: "himalayas",
+      jobs: [],
+      success: false,
+      message: error instanceof Error ? error.message : "Unknown Himalayas error"
+    };
+  }
+}
+
+export async function arbeitnowProvider(query: string, limit: number): Promise<ProviderResult> {
+  try {
+    const payload = await fetchJson<{
+      data: Array<{
+        slug: string;
+        company_name?: string;
+        title?: string;
+        description?: string;
+        remote?: boolean;
+        location?: string;
+        tags?: string[];
+        job_types?: string[];
+        created_at?: string;
+        url?: string;
+      }>;
+    }>("https://www.arbeitnow.com/api/job-board-api");
+    const queryTokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const jobs = payload.data
+      .map((item) =>
+        normalizeJob("arbeitnow", {
+          sourceJobId: item.slug,
+          title: item.title ?? "Untitled role",
+          company: item.company_name ?? "Arbeitnow",
+          location: item.location || "Remote",
+          employmentType: item.job_types?.join(", ") || null,
+          remoteType: item.remote ? "Remote" : null,
+          url: item.url ?? `https://www.arbeitnow.com/jobs/${item.slug}`,
+          description: item.description ?? "",
+          postedAt: item.created_at ?? null,
+          queryText: query,
+          rawPayload: item
+        })
+      )
+      .filter((job) => {
+        return matchesEngineeringQuery(job, queryTokens);
+      })
+      .slice(0, limit);
+
+    return {
+      providerId: "arbeitnow",
+      jobs,
+      success: true,
+      message: `Fetched ${jobs.length} jobs`
+    };
+  } catch (error) {
+    return {
+      providerId: "arbeitnow",
+      jobs: [],
+      success: false,
+      message: error instanceof Error ? error.message : "Unknown Arbeitnow error"
+    };
+  }
+}
+
+function parseIndeedJobs(
+  providerId: "indeedCom" | "indeedFr",
+  domain: string,
+  query: string,
+  limit: number,
+  html: string
+): ProviderJob[] {
+  const $ = cheerio.load(html);
+  return $("a[data-jk], div.job_seen_beacon, li div[data-testid='slider_item']")
+    .slice(0, limit)
+    .map((_, element) => {
+      const root = $(element);
+      const title = root.find("h2 a span, .jobTitle span, [data-testid='job-title']").first().text();
+      const company = root.find("[data-testid='company-name'], .companyName").first().text();
+      const location = root.find("[data-testid='text-location'], .companyLocation").first().text();
+      const link = root.find("a").first().attr("href");
+      const description = root.text();
+      return normalizeJob(providerId, {
+        sourceJobId: root.attr("data-jk") ?? link ?? title,
+        title,
+        company,
+        location,
+        remoteType: pickRemoteType(description),
+        employmentType: null,
+        salaryText: root.find(".salary-snippet-container").first().text() || null,
+        url: link?.startsWith("http") ? link : `https://${domain}${link ?? ""}`,
+        description,
+        postedAt: null,
+        queryText: query,
+        rawPayload: { html: $.html(element) }
+      });
+    })
+    .get()
+    .filter((job) => job.title && job.url);
+}
+
+function parseJobsDbJobs(
+  providerId: "jobsdbTh" | "jobsdbHk",
+  domain: string,
+  query: string,
+  limit: number,
+  html: string
+): ProviderJob[] {
+  const $ = cheerio.load(html);
+  return $("article, [data-automation='normalJob']")
+    .slice(0, limit)
+    .map((_, element) => {
+      const root = $(element);
+      const title = root.find("a[data-automation='jobTitle'], a").first().text();
+      const company = root.find("[data-automation='jobCompany']").first().text();
+      const location = root.find("[data-automation='jobLocation']").first().text();
+      const description = root.text();
+      const link = root.find("a").first().attr("href");
+      return normalizeJob(providerId, {
+        sourceJobId: link ?? title,
+        title,
+        company,
+        location,
+        employmentType: null,
+        remoteType: pickRemoteType(description),
+        salaryText: root.find("[data-automation='jobSalary']").first().text() || null,
+        url: link?.startsWith("http") ? link : `https://${domain}${link ?? ""}`,
+        description,
+        postedAt: null,
+        queryText: query,
+        rawPayload: { html: $.html(element) }
+      });
+    })
+    .get()
+    .filter((job) => job.title && job.url);
+}
+
 async function guardedIndeedProvider(
   providerId: "indeedCom" | "indeedFr",
   domain: string,
   query: string,
   limit: number
 ): Promise<ProviderResult> {
+  const url = `https://${domain}/jobs?q=${encodeURIComponent(query)}&limit=${limit}`;
   try {
-    const url = `https://${domain}/jobs?q=${encodeURIComponent(query)}&limit=${limit}`;
     const html = await fetchHtml(url);
-    const $ = cheerio.load(html);
-    const jobs = $("a[data-jk], div.job_seen_beacon")
-      .slice(0, limit)
-      .map((_, element) => {
-        const root = $(element);
-        const title = root.find("h2 a span, .jobTitle span").first().text();
-        const company = root.find("[data-testid='company-name'], .companyName").first().text();
-        const location = root.find("[data-testid='text-location'], .companyLocation").first().text();
-        const link = root.find("a").first().attr("href");
-        const description = root.text();
-        return normalizeJob(providerId, {
-          sourceJobId: root.attr("data-jk") ?? link ?? title,
-          title,
-          company,
-          location,
-          remoteType: pickRemoteType(description),
-          employmentType: null,
-          salaryText: root.find(".salary-snippet-container").first().text() || null,
-          url: link?.startsWith("http") ? link : `https://${domain}${link ?? ""}`,
-          description,
-          postedAt: null,
-          queryText: query,
-          rawPayload: { html: $.html(element) }
-        });
-      })
-      .get()
-      .filter((job) => job.title && job.url);
+    const jobs = parseIndeedJobs(providerId, domain, query, limit, html);
 
     return {
       providerId,
@@ -300,12 +735,30 @@ async function guardedIndeedProvider(
         : "No jobs parsed. The site may have changed its HTML or returned a challenge page."
     };
   } catch (error) {
-    return {
-      providerId,
-      jobs: [],
-      success: false,
-      message: `Guarded provider: ${error instanceof Error ? error.message : "Unknown error"}`
-    };
+    try {
+      let jobs = await parseIndeedJobsWithPlaywright(providerId, domain, query, limit, url);
+      if (!jobs.length) {
+        const html = await fetchHtmlWithPlaywright(url);
+        jobs = parseIndeedJobs(providerId, domain, query, limit, html);
+      }
+      return {
+        providerId,
+        jobs,
+        success: jobs.length > 0,
+        message: jobs.length > 0
+          ? `Fetched ${jobs.length} jobs via Playwright fallback`
+          : "Playwright fallback loaded the page but no jobs were parsed."
+      };
+    } catch (fallbackError) {
+      return {
+        providerId,
+        jobs: [],
+        success: false,
+        message:
+          `Guarded provider: ${error instanceof Error ? error.message : "Unknown error"} | ` +
+          `Playwright fallback: ${fallbackError instanceof Error ? fallbackError.message : "Unknown error"}`
+      };
+    }
   }
 }
 
@@ -323,37 +776,11 @@ async function guardedJobsDbProvider(
   query: string,
   limit: number
 ): Promise<ProviderResult> {
+  const slug = query.trim().replace(/\s+/g, "-");
+  const url = `https://${domain}/${encodeURIComponent(slug)}-jobs`;
   try {
-    const slug = query.trim().replace(/\s+/g, "-");
-    const url = `https://${domain}/${encodeURIComponent(slug)}-jobs`;
     const html = await fetchHtml(url);
-    const $ = cheerio.load(html);
-    const jobs = $("article, [data-automation='normalJob']")
-      .slice(0, limit)
-      .map((_, element) => {
-        const root = $(element);
-        const title = root.find("a[data-automation='jobTitle'], a").first().text();
-        const company = root.find("[data-automation='jobCompany']").first().text();
-        const location = root.find("[data-automation='jobLocation']").first().text();
-        const description = root.text();
-        const link = root.find("a").first().attr("href");
-        return normalizeJob(providerId, {
-          sourceJobId: link ?? title,
-          title,
-          company,
-          location,
-          employmentType: null,
-          remoteType: pickRemoteType(description),
-          salaryText: root.find("[data-automation='jobSalary']").first().text() || null,
-          url: link?.startsWith("http") ? link : `https://${domain}${link ?? ""}`,
-          description,
-          postedAt: null,
-          queryText: query,
-          rawPayload: { html: $.html(element) }
-        });
-      })
-      .get()
-      .filter((job) => job.title && job.url);
+    const jobs = parseJobsDbJobs(providerId, domain, query, limit, html);
 
     return {
       providerId,
@@ -364,12 +791,30 @@ async function guardedJobsDbProvider(
         : "No jobs parsed. JobsDB likely returned a challenge page."
     };
   } catch (error) {
-    return {
-      providerId,
-      jobs: [],
-      success: false,
-      message: `Guarded provider: ${error instanceof Error ? error.message : "Unknown error"}`
-    };
+    try {
+      let jobs = await parseJobsDbWithPlaywright(providerId, domain, query, limit, url);
+      if (!jobs.length) {
+        const html = await fetchHtmlWithPlaywright(url);
+        jobs = parseJobsDbJobs(providerId, domain, query, limit, html);
+      }
+      return {
+        providerId,
+        jobs,
+        success: jobs.length > 0,
+        message: jobs.length > 0
+          ? `Fetched ${jobs.length} jobs via Playwright fallback`
+          : "Playwright fallback loaded the page but no jobs were parsed."
+      };
+    } catch (fallbackError) {
+      return {
+        providerId,
+        jobs: [],
+        success: false,
+        message:
+          `Guarded provider: ${error instanceof Error ? error.message : "Unknown error"} | ` +
+          `Playwright fallback: ${fallbackError instanceof Error ? fallbackError.message : "Unknown error"}`
+      };
+    }
   }
 }
 
@@ -450,9 +895,12 @@ export const providerRegistry = {
   remotive: remotiveProvider,
   remoteok: remoteOkProvider,
   wwr: weWorkRemotelyProvider,
+  himalayas: himalayasProvider,
+  arbeitnow: arbeitnowProvider,
   indeedCom: indeedComProvider,
   indeedFr: indeedFrProvider,
   jobsdbTh: jobsdbThProvider,
   jobsdbHk: jobsdbHkProvider,
+  googleJobs: googleJobsProvider,
   demo: demoProvider
 } as const;
